@@ -38,7 +38,7 @@ SYSTEM_PROMPT = (
 
 
 # ---------------------------------------------------------------------------
-# Custom retry predicate — only retry on transient HTTP errors
+# Custom retry predicate - only retry on transient HTTP errors
 # ---------------------------------------------------------------------------
 
 
@@ -60,7 +60,7 @@ def _is_retryable(exc: BaseException) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# AIClient — calls /v1/ai/extract
+# AIClient - calls /v1/ai/extract
 # ---------------------------------------------------------------------------
 
 
@@ -129,7 +129,7 @@ class AIClient:
 
 
 # ---------------------------------------------------------------------------
-# NotifyClient — calls /v1/notify
+# NotifyClient - calls /v1/notify
 # ---------------------------------------------------------------------------
 
 

@@ -118,7 +118,7 @@ async def process_request(
         reason = str(exc)
 
     except Exception as exc:
-        # Unexpected error — log at error level for investigation
+        # Unexpected error - log at error level for investigation
         logger.error(
             "request_id=%s unexpected_error=%s", request_id, exc, exc_info=True
         )

@@ -14,7 +14,7 @@ import re
 from models import GuardrailsError, NotificationPayload
 
 # ---------------------------------------------------------------------------
-# Key-alias map — variant keys produced by the provider
+# Key-alias map - variant keys produced by the provider
 # ---------------------------------------------------------------------------
 
 KEY_ALIASES: dict[str, list[str]] = {
@@ -69,7 +69,7 @@ def repair_malformed_json(text: str) -> str:
     """Best-effort repair of common JSON defects.
 
     Handles:
-    * Trailing ``...`` (truncated responses) — stripped, then unclosed
+    * Trailing ``...`` (truncated responses) - stripped, then unclosed
       braces/quotes are closed.
     * Single-quoted strings → double-quoted strings (preserves apostrophes
       inside values).
@@ -78,7 +78,7 @@ def repair_malformed_json(text: str) -> str:
     # 1. Fix truncated JSON: remove trailing ellipsis and whitespace
     cleaned = re.sub(r"\s*\.{2,}\s*$", "", text)
 
-    # 2. Close unclosed quotes — count double-quotes; if odd, append one
+    # 2. Close unclosed quotes - count double-quotes; if odd, append one
     if cleaned.count('"') % 2 != 0:
         cleaned += '"'
 
@@ -92,7 +92,7 @@ def repair_malformed_json(text: str) -> str:
     #    delimiters (immediately after { , : or before } , :).
     #    This avoids breaking apostrophes inside values like "it's".
     if "'" in cleaned and '"' not in cleaned:
-        # Entire string uses single quotes — safe to swap all
+        # Entire string uses single quotes - safe to swap all
         cleaned = cleaned.replace("'", '"')
 
     # 5. Fix unquoted keys: word characters before a colon at key position
@@ -116,7 +116,7 @@ def normalize_keys(data: dict) -> dict:
             result[key] = value
         elif key in _REVERSE_ALIASES:
             result[_REVERSE_ALIASES[key]] = value
-        # else: extra field — silently dropped
+        # else: extra field - silently dropped
     return result
 
 
