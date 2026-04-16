@@ -1,63 +1,210 @@
-﻿# AI Engineer Challenge: Intelligent Notification Service
+﻿# Herald - Intelligent Notification Service
 
-## El Reto
-Tu objetivo es implementar un servicio que procese entradas de lenguaje natural, extraiga información estructurada mediante un motor de IA y coordine el envío de notificaciones. La solución debe ser capaz de manejar la incertidumbre de los LLM (ruido en respuestas, formatos inconsistentes) y la latencia del procesamiento cognitivo.
+Herald es un microservicio que recibe instrucciones en lenguaje natural, extrae datos estructurados mediante un motor de IA y coordina el envío de notificaciones (email/SMS). Su diferenciador clave es un pipeline de guardrails robusto diseñado para manejar la naturaleza estocástica de las respuestas de LLMs.
 
-```mermaid 
+```mermaid
 flowchart LR
-    A[User Input] --> B(Your App)
-    B <--> C[AI API]
-    B --> D[Notification Provider]
-    
+    A[User Input] --> B(Herald API)
+    B <-->|extract| C[AI Engine]
+    B -->|notify| D[Notification Provider]
+
     style B fill:#1a2a6c,stroke:#fff,stroke-width:2px,color:#fff
 ```
 
 ---
 
-## Contrato de API
-Para que la suite de validación pueda ejecutar los tests, debes implementar estrictamente los siguientes endpoints en una instancia de **FastAPI** corriendo en el puerto `5000`.
+## Arquitectura
 
-### Requisitos de estructura
-- **Punto de Entrada:** `app/main.py`
-- **Instancia:** `app = FastAPI()`
-- **Puerto local:** `localhost:5000`
+### Pipeline de Procesamiento
 
-### 1. Ingesta de Intenciones
-- **POST** `/v1/requests`
-- **Input:** `{"user_input": "Manda un mail a feda@test.com diciendo hola"}`
-- **Output:** `201 Created` con `{"id": "string"}`
+Cada solicitud pasa por un pipeline síncrono de 3 fases con guardrails integrados:
 
-### 2. Procesamiento de Envío
-- **POST** `/v1/requests/{id}/process`
-- **Lógica esperada:**
-    1. **Extracción:** Llamar a la IA en `localhost:3001/v1/ai/extract`.
-    2. **Prompting:** Diseñar un `system prompt` para extraer: `{"to": "...", "message": "...", "type": "email|sms"}`.
-    3. **Guardrails:** Implementar lógica para limpiar y validar la respuesta (quitar Markdown, corregir JSON mal formado, etc).
-    4. **Notificación:** Si es válido, enviar a `localhost:3001/v1/notify`.
-- **Output:** `200 OK` o `202 Accepted`
+```mermaid
+flowchart TD
+    subgraph "1. Ingesta"
+        A["POST /v1/requests"] --> B["Request Store\n(status: queued)"]
+    end
 
-> **Nota sobre el prompt:** Para garantizar la estabilidad de los tests, el mock utiliza lógica interna para resolver la extracción. Sin embargo, la calidad y robustez de tus instrucciones (prompting) serán factores determinantes en la evaluación humana.
+    subgraph "2. Procesamiento"
+        C["POST /v1/requests/{id}/process"] --> D["Lock per-request\n(atomicidad)"]
+        D --> E["AI Extract\n(httpx + tenacity)"]
+        E --> F["Guardrails Pipeline\n(8 etapas de limpieza)"]
+        F --> G["Notify\n(httpx + tenacity)"]
+    end
 
-### 3. Consulta de Estado
-- **GET** `/v1/requests/{id}`
-- **Output:** `200 OK` con `{"id": "string", "status": "queued|processing|sent|failed"}`
+    subgraph "3. Consulta"
+        H["GET /v1/requests/{id}"] --> I["status: sent | failed"]
+    end
+
+    B --> C
+    G --> I
+```
+
+### Guardrails Pipeline
+
+El motor de IA devuelve respuestas con alta variabilidad. Herald implementa una cadena de 8 transformaciones para maximizar la tasa de extracción exitosa:
+
+```mermaid
+flowchart TD
+    RAW["Respuesta cruda del LLM"] --> S1["1. Strip Markdown"]
+    S1 --> S2["2. Extraer JSON de texto libre"]
+    S2 --> S3["3. Reparar JSON malformado"]
+    S3 --> S4["4. json.loads()"]
+    S4 --> S5["5. Normalizar claves variantes"]
+    S5 --> S6["6. Inferir tipo faltante"]
+    S6 --> S7["7. Validar con Pydantic"]
+    S7 --> OK["✓ NotificationPayload"]
+
+    S1 -->|sin JSON| FAIL["✗ failed"]
+    S2 -->|sin JSON| FAIL
+    S3 -->|irreparable| FAIL
+    S7 -->|inválido| FAIL
+```
+
+| Etapa | Qué resuelve |
+|-------|-------------|
+| Strip Markdown | Respuestas envueltas en ` ```json ``` ` |
+| Extraer JSON | JSON embebido en texto explicativo |
+| Reparar JSON | Comillas simples, claves sin comillas, JSON truncado |
+| Normalizar claves | `Recipient`→`to`, `body`→`message`, `channel`→`type` |
+| Inferir tipo | Si falta `type`, lo deduce del formato de `to` (email/teléfono) |
+| Validar Pydantic | Validación estricta del payload final |
+
+### Máquina de Estados
+
+```mermaid
+stateDiagram-v2
+    [*] --> queued : POST /v1/requests
+    queued --> processing : POST /v1/requests/{id}/process
+    processing --> sent : notificación entregada
+    processing --> failed : error en pipeline
+    sent --> [*]
+    failed --> [*]
+```
 
 ---
 
-## Integración con el Provider
-El motor de IA y el servicio de notificaciones están disponibles en `localhost:3001`. Ambos requieren el encabezado de seguridad: `X-API-Key: test-dev-2026`.
+## Decisiones de Diseño
 
-- **Motor IA:** `/v1/ai/extract` (Esquema estándar de mensajes `system`/`user`).
-- **Notificaciones:** `/v1/notify` (Esquema definido en los docs del provider).
-- **Documentación:** Puedes consultar los Swagger Docs en `http://localhost:3001/docs`.
+| Decisión | Justificación |
+|----------|---------------|
+| **Procesamiento síncrono** | El test k6 consulta el estado 0.5s después de `/process`. El pipeline debe completarse dentro de la llamada HTTP. |
+| **At-most-once delivery** | Un lock per-request garantiza que cada solicitud genera como máximo una notificación. Los estados `sent` y `failed` son terminales. |
+| **Idempotencia en `/process`** | Llamadas repetidas a `/process` retornan el estado actual sin re-procesar. |
+| **Semáforos de concurrencia** | Limitan llamadas salientes al provider para evitar rate limits (429). Actúan como cola implícita. |
+| **Timeout global (25s)** | `asyncio.wait_for` envuelve todo el pipeline. Evita que reintentos acumulados bloqueen recursos. |
+| **Retry con backoff** | `tenacity` con espera exponencial (0.5s→4s) para errores transitorios (429, 500, timeout). |
+
+---
+
+## Estructura del Proyecto
+
+```
+app/
+├── main.py          # FastAPI app, endpoints, lifecycle
+├── models.py        # Modelos Pydantic (request/response/internal)
+├── services.py      # Orquestación del pipeline de procesamiento
+├── guardrails.py    # Limpieza, reparación y normalización de respuestas LLM
+├── client.py        # Clientes HTTP async con retry (AI extract + notify)
+├── store.py         # Request Store en memoria con máquina de estados
+├── requirements.txt # Dependencias
+└── Dockerfile       # Configuración de build
+```
 
 ---
 
-## Ejecución y Evaluación
-1. **Levantar infraestructura:** `docker-compose up -d provider influxdb grafana`
-2. **Tu aplicación:** `docker-compose up -d --build app`
-3. **Validación (k6):** `docker-compose run --rm load-test`
-4. **Resultados:** Visualiza el scorecard en tiempo real en [Grafana (localhost:3000)](http://localhost:3000/d/ia-performance-scorecard/)
+## API
+
+### POST `/v1/requests` - Ingesta de intenciones
+
+```bash
+curl -X POST http://localhost:5000/v1/requests \
+  -H "Content-Type: application/json" \
+  -d '{"user_input": "Manda un mail a feda@test.com diciendo hola"}'
+```
+
+**Response:** `201 Created`
+```json
+{"id": "a1b2c3d4e5f6g7h8"}
+```
+
+### POST `/v1/requests/{id}/process` - Procesamiento
+
+```bash
+curl -X POST http://localhost:5000/v1/requests/a1b2c3d4e5f6g7h8/process
+```
+
+**Response:** `200 OK`
+```json
+{"id": "a1b2c3d4e5f6g7h8", "status": "sent"}
+```
+
+### GET `/v1/requests/{id}` - Consulta de estado
+
+```bash
+curl http://localhost:5000/v1/requests/a1b2c3d4e5f6g7h8
+```
+
+**Response:** `200 OK`
+```json
+{"id": "a1b2c3d4e5f6g7h8", "status": "sent"}
+```
 
 ---
-*Se valorará la robustez frente a errores inesperados, la calidad del prompting y la arquitectura del pipeline de procesamiento.*
+
+## Resiliencia y Observabilidad
+
+### Clasificación de Errores
+
+| Categoría | Origen | Descripción |
+|-----------|--------|-------------|
+| `extraction_error` | AI Client | Llamada a `/v1/ai/extract` falló tras reintentos |
+| `parsing_error` | Guardrails | No se pudo extraer JSON de la respuesta |
+| `validation_error` | Guardrails | Datos extraídos no pasaron validación Pydantic |
+| `provider_error` | Notify Client | Entrega de notificación falló tras reintentos |
+| `timeout_error` | Pipeline | Timeout global del pipeline excedido |
+
+### Logging Estructurado
+
+Cada solicitud se traza con `request_id` y tiempos por fase:
+
+```
+INFO  [req-a1b2c3d4] Created request, status=queued
+INFO  [req-a1b2c3d4] Processing started
+INFO  [req-a1b2c3d4] AI extract completed in 1.8s
+WARN  [req-a1b2c3d4] Guardrails: repaired single quotes in JSON
+INFO  [req-a1b2c3d4] Parsed: to=user@test.com type=email
+INFO  [req-a1b2c3d4] Notify completed in 0.3s, provider_id=p-4521
+INFO  [req-a1b2c3d4] Status → sent (total: 2.4s)
+```
+
+---
+
+## Ejecución
+
+```bash
+# 1. Levantar infraestructura
+docker-compose up -d provider influxdb grafana
+
+# 2. Build y levantar Herald
+docker-compose up -d --build app
+
+# 3. Ejecutar tests de carga (k6)
+docker-compose run --rm load-test
+
+# 4. Ver resultados en Grafana
+open http://localhost:3000/d/ia-performance-scorecard/
+```
+
+---
+
+## Stack Tecnológico
+
+- **FastAPI** - Framework web async
+- **httpx** - Cliente HTTP async con connection pooling
+- **Pydantic v2** - Validación de datos con modelos tipados
+- **tenacity** - Retry con exponential backoff
+- **asyncio** - Semáforos, locks, timeouts
+- **Docker** - Containerización
+- **k6** - Load testing
+- **Grafana + InfluxDB** - Observabilidad
