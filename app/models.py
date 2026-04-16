@@ -62,8 +62,8 @@ class StatusResponse(_APISchema):
 class NotificationPayload(BaseModel):
     """Validated payload sent to the notification provider."""
 
-    to: str
-    message: str
+    to: str = Field(min_length=1)
+    message: str = Field(min_length=1)
     type: Literal["email", "sms"]
 
 
