@@ -10,6 +10,19 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+# ---------------------------------------------------------------------------
+# Shared type aliases (single source of truth for the whole app)
+# ---------------------------------------------------------------------------
+
+Status = Literal["queued", "processing", "sent", "failed"]
+FailureCategory = Literal[
+    "extraction_error",
+    "parsing_error",
+    "validation_error",
+    "provider_error",
+    "timeout_error",
+]
+
 
 # ---------------------------------------------------------------------------
 # Strict base for API schemas (rejects unexpected fields)
@@ -39,7 +52,7 @@ class StatusResponse(_APISchema):
     """Response for GET /v1/requests/{id} and POST /v1/requests/{id}/process."""
 
     id: str
-    status: Literal["queued", "processing", "sent", "failed"]
+    status: Status
 
 
 # ---------------------------------------------------------------------------
@@ -59,17 +72,8 @@ class RequestRecord(BaseModel):
 
     id: str
     user_input: str
-    status: Literal["queued", "processing", "sent", "failed"] = "queued"
-    failure_category: (
-        Literal[
-            "extraction_error",
-            "parsing_error",
-            "validation_error",
-            "provider_error",
-            "timeout_error",
-        ]
-        | None
-    ) = None
+    status: Status = "queued"
+    failure_category: FailureCategory | None = None
     failure_reason: str | None = None
     created_at: float
 
