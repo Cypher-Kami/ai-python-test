@@ -97,3 +97,11 @@ class GuardrailsError(Exception):
         self.category = category
         self.reason = reason
         super().__init__(reason)
+
+
+class ExtractionError(Exception):
+    """AI extraction call failed after exhausting retries."""
+
+
+class ProviderError(Exception):
+    """Notification delivery failed after exhausting retries."""

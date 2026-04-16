@@ -19,7 +19,7 @@ from tenacity import (
     wait_exponential,
 )
 
-from models import NotificationPayload
+from models import ExtractionError, NotificationPayload, ProviderError
 
 logger = logging.getLogger("herald.client")
 
@@ -83,12 +83,6 @@ class AIClient:
         self._base_url = base_url
         self._api_key = api_key
 
-    @retry(
-        retry=retry_if_exception(_is_retryable),
-        wait=wait_exponential(multiplier=0.5, min=0.5, max=4),
-        stop=stop_after_attempt(3),
-        before_sleep=before_sleep_log(logger, logging.WARNING),
-    )
     async def extract(self, user_input: str) -> str:
         """Send *user_input* to the AI extraction endpoint and return the raw content.
 
@@ -100,11 +94,22 @@ class AIClient:
             The ``content`` string from the first choice in the AI response.
 
         Raises:
-            httpx.HTTPStatusError: For non-2xx responses (after retry
-                exhaustion for 429/500).
-            httpx.TimeoutException: When the request times out (after retry
-                exhaustion).
+            ExtractionError: When all retry attempts are exhausted or a
+                permanent error occurs.
         """
+        try:
+            return await self._extract_with_retry(user_input)
+        except Exception as exc:
+            raise ExtractionError(str(exc)) from exc
+
+    @retry(
+        retry=retry_if_exception(_is_retryable),
+        wait=wait_exponential(multiplier=0.5, min=0.5, max=4),
+        stop=stop_after_attempt(3),
+        before_sleep=before_sleep_log(logger, logging.WARNING),
+    )
+    async def _extract_with_retry(self, user_input: str) -> str:
+        """Internal retry-wrapped call to the AI extraction endpoint."""
         async with self._semaphore:
             logger.debug("ai_extract_start user_input_length=%d", len(user_input))
             response = await self._http_client.post(
@@ -147,12 +152,6 @@ class NotifyClient:
         self._base_url = base_url
         self._api_key = api_key
 
-    @retry(
-        retry=retry_if_exception(_is_retryable),
-        wait=wait_exponential(multiplier=0.5, min=0.5, max=4),
-        stop=stop_after_attempt(3),
-        before_sleep=before_sleep_log(logger, logging.WARNING),
-    )
     async def send(self, payload: NotificationPayload) -> dict:
         """Deliver a validated *payload* to the notification provider.
 
@@ -160,15 +159,25 @@ class NotifyClient:
         attempt independently waits for a slot.
 
         Returns:
-            The JSON response body from the provider (e.g.
-            ``{"status": "delivered", "provider_id": "p-1234"}``).
+            The JSON response body from the provider.
 
         Raises:
-            httpx.HTTPStatusError: For non-2xx responses (after retry
-                exhaustion for 429/500).
-            httpx.TimeoutException: When the request times out (after retry
-                exhaustion).
+            ProviderError: When all retry attempts are exhausted or a
+                permanent error occurs.
         """
+        try:
+            return await self._send_with_retry(payload)
+        except Exception as exc:
+            raise ProviderError(str(exc)) from exc
+
+    @retry(
+        retry=retry_if_exception(_is_retryable),
+        wait=wait_exponential(multiplier=0.5, min=0.5, max=4),
+        stop=stop_after_attempt(3),
+        before_sleep=before_sleep_log(logger, logging.WARNING),
+    )
+    async def _send_with_retry(self, payload: NotificationPayload) -> dict:
+        """Internal retry-wrapped call to the notification endpoint."""
         async with self._semaphore:
             logger.debug("notify_send_start to=%s type=%s", payload.to, payload.type)
             response = await self._http_client.post(
